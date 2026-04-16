@@ -8,10 +8,12 @@ import sherpa_onnx
 import re
 import tarfile
 import shutil
+import gc
 from pydub import AudioSegment
 from underthesea import sent_tokenize
+
 # --- Cấu hình ---
-# Cho phép đổi đường dẫn qua biến môi trường, mặc định là thư mục models trong dự án
+# MODEL_DIR mặc định là thư mục models trong dự án
 MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.getcwd(), "models"))
 
 # Tự động tìm đường dẫn ffmpeg/ffprobe cho pydub trên môi trường Cloud
@@ -24,13 +26,13 @@ if ffprobe_find:
 
 def download_file(url, dest_path):
     """Hàm bổ trợ tải file có xử lý lỗi và headers."""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         print(f"📥 Downloading {os.path.basename(dest_path)}...")
         resp = requests.get(url, headers=headers, stream=True, timeout=30)
         resp.raise_for_status()
         with open(dest_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
+            for chunk in resp.iter_content(chunk_size=65536): # Tăng chunk size để tải nhanh hơn
                 if chunk: f.write(chunk)
         print(f"✅ Downloaded {os.path.basename(dest_path)}")
         return True
@@ -40,229 +42,182 @@ def download_file(url, dest_path):
         return False
 
 def download_model_if_needed():
-    """Tự động tải model ZipFormer từ GitHub nếu chưa có (phục vụ deploy cloud)."""
+    """Tải model ZipFormer INT8 (Bản tối ưu cho Cloud) từ GitHub."""
     os.makedirs(MODEL_DIR, exist_ok=True)
     
-    # Nếu đã có file encoder thì coi như đã tải xong
-    if glob.glob(os.path.join(MODEL_DIR, "encoder-*.onnx")):
+    # Check if INT8 models already exist
+    if glob.glob(os.path.join(MODEL_DIR, "encoder-*.int8.onnx")):
         return
 
-    # Link GitHub Release (Ổn định hơn HuggingFace trên Cloud)
-    model_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-2025-04-20.tar.bz2"
-    archive_name = "model_vi.tar.bz2"
+    # SỬ DỤNG BẢN INT8 ĐỂ TIẾT KIỆM RAM (Quan trọng cho Zeabur/Railway)
+    model_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-int8-2025-04-20.tar.bz2"
+    archive_name = "model_vi_int8.tar.bz2"
 
-    print(f"📂 Checking model in: {MODEL_DIR}")
-    print(f"📥 Downloading ASR Model from GitHub...")
+    print(f"📂 Model check in: {MODEL_DIR}")
+    print(f"📥 Downloading INT8 ASR Model (Cloud Optimized)...")
     
     if download_file(model_url, archive_name):
-        print("📦 Extracting Zipformer ASR...")
+        print("📦 Extracting INT8 Zipformer...")
         try:
             with tarfile.open(archive_name, "r:bz2") as tar:
                 tar.extractall(".")
             
-            extracted_dir = "sherpa-onnx-zipformer-vi-2025-04-20"
+            # Folder name updated to match the int8 release
+            extracted_dir = "sherpa-onnx-zipformer-vi-int8-2025-04-20"
             if os.path.exists(extracted_dir):
-                # Move files to MODEL_DIR
                 for f in os.listdir(extracted_dir):
                     src = os.path.join(extracted_dir, f)
                     dst = os.path.join(MODEL_DIR, f)
                     if os.path.exists(dst): os.remove(dst)
                     shutil.move(src, dst)
                 shutil.rmtree(extracted_dir)
-            print("✅ Vietnamese Zipformer ASR Model Ready")
+            print("✅ INT8 Model Ready")
         except Exception as e:
             print(f"❌ Extraction Failed: {e}")
         finally:
             if os.path.exists(archive_name): os.remove(archive_name)
 
 def load_recognizer():
-    # Kiểm tra và tải model nếu cần
     try:
         download_model_if_needed()
     except Exception as e:
-        print(f"⚠️ Warning during model check: {e}")
+        print(f"⚠️ Model check warning: {e}")
     
-    # 🕵️ Debug: In danh sách file trong model_dir
-    if os.path.exists(MODEL_DIR):
-        print(f"📦 Files in {MODEL_DIR}: {os.listdir(MODEL_DIR)}")
-    
-    # Tìm file bằng glob để đảm bảo an toàn (tên file có thể thay đổi nhẹ)
     try:
         tokens = os.path.join(MODEL_DIR, "tokens.txt")
-        encoder = glob.glob(os.path.join(MODEL_DIR, "encoder-*.onnx"))[0]
-        decoder = glob.glob(os.path.join(MODEL_DIR, "decoder-*.onnx"))[0]
-        joiner = glob.glob(os.path.join(MODEL_DIR, "joiner-*.onnx"))[0]
+        # Tìm file bản INT8 ưu tiên
+        encoder = glob.glob(os.path.join(MODEL_DIR, "encoder-*.int8.onnx")) or glob.glob(os.path.join(MODEL_DIR, "encoder-*.onnx"))
+        decoder = glob.glob(os.path.join(MODEL_DIR, "decoder-*.int8.onnx")) or glob.glob(os.path.join(MODEL_DIR, "decoder-*.onnx"))
+        joiner = glob.glob(os.path.join(MODEL_DIR, "joiner-*.int8.onnx")) or glob.glob(os.path.join(MODEL_DIR, "joiner-*.onnx"))
         
-        print(f"⏳ [INIT] Đang load Vietnamese Zipformer (Sherpa-ONNX)...")
+        if not (encoder and decoder and joiner):
+            raise FileNotFoundError("Missing INT8 ONNX files.")
+
+        print(f"⏳ [INIT] Loading Zipformer INT8 (Threads: 2)...")
         recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
             tokens=tokens,
-            encoder=encoder,
-            decoder=decoder,
-            joiner=joiner,
-            num_threads=4,
+            encoder=encoder[0],
+            decoder=decoder[0],
+            joiner=joiner[0],
+            num_threads=2, # Giảm thread để không bị kill CPU
             sample_rate=16000,
             feature_dim=80,
         )
         return recognizer
-    except IndexError:
-        print(f"❌ Error: Could not find model files in {MODEL_DIR}. Please check the download/extraction.")
-        raise FileNotFoundError("Missing model files.")
+    except Exception as e:
+        print(f"❌ Recognizer Load Error: {e}")
+        return None
 
 def clean_token(t):
-    # ZipFormer thường có ký tự lạ hoặc khoảng trắng ở đầu token (ví dụ: ' ', '▁')
     return t.replace(' ', '').replace('▁', '').strip().lower()
 
 def process_and_align(audio_path, text_path, output_dir, article_id, recognizer):
-    # 1. Chuẩn hóa Audio
-    audio = AudioSegment.from_file(audio_path).set_frame_rate(16000).set_channels(1)
-    wav_16k = audio_path.replace(".m4a", "_16k.wav")
-    audio.export(wav_16k, format="wav")
-
-    # 2. Nhận dạng lấy Timestamps (ASR)
-    # Để tránh Bad Allocation cho file dài, ta sẽ decode từng đoạn 30s 
-    # Nhưng ở đây mình sẽ dùng logic gộp kết quả để lấy full timestamps
-    with wave.open(wav_16k, 'rb') as f:
-        samples = np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-
-    # Nếu file quá dài, chia samples thành các đoạn nhỏ để decode
-    # (Ví dụ chia mỗi 30s ~ 480,000 samples)
-    chunk_size = 16000 * 30 
+    # --- Bước 1: Decode Audio sang Waveform (Tối ưu RAM) ---
+    print(f"🔈 Processing Audio: {os.path.basename(audio_path)}")
+    
+    # Thay vì dùng Pydub export rồi lại dùng wave open, ta dùng AudioSegment trực tiếp
+    # sau đó gọi get_array_of_samples để tránh đọc từ disk 2 lần.
+    audio_full = AudioSegment.from_file(audio_path).set_frame_rate(16000).set_channels(1)
+    
+    # Chuyển đổi sang numpy float32 ngay (giải phóng buffer int16 nhanh nhất có thể)
+    samples = np.array(audio_full.get_array_of_samples()).astype(np.float32) / 32768.0
+    
+    # --- Bước 2: Nhận dạng lấy Timestamps (Tối ưu hóa Loop) ---
+    chunk_size = 16000 * 30 # 30s chunks
     all_tokens = []
     all_timestamps = []
     offset = 0
 
+    print(f"🎤 Running ASR (Zipformer INT8)...")
     for i in range(0, len(samples), chunk_size):
         chunk = samples[i : i + chunk_size]
         stream = recognizer.create_stream()
         stream.accept_waveform(16000, chunk)
         recognizer.decode_stream(stream)
         
-        result = stream.result
-        # Cộng offset thời gian cho từng đoạn chunk
-        for t_idx, ts in enumerate(result.timestamps):
-            all_tokens.append(clean_token(result.tokens[t_idx]))
+        res = stream.result
+        for t_idx, ts in enumerate(res.timestamps):
+            all_tokens.append(clean_token(res.tokens[t_idx]))
             all_timestamps.append(ts + (offset / 16000))
         offset += len(chunk)
 
-    # 3. Đọc văn bản gốc và tách câu
+    # --- Bước 3: NLP & Alignment ---
     with open(text_path, 'r', encoding='utf-8') as f:
         standard_text = f.read()
+    
+    # Tách câu (Lưu ý: model underthesea sẽ được pre-download trong Dockerfile)
     sentences = sent_tokenize(standard_text)
-    # =============================================================
-    # GIAI ĐOẠN 3.5: TIỀN XỬ LÝ TOKENS (Gộp đánh vần)
-    # =============================================================
+
+    # Tiền xử lý tokens Zipformer (vẫn giữ logic gộp đánh vần)
     processed_tokens = []
     processed_timestamps = []
     temp_word = ""
-    
-    print(f"🧹 Đang tiền xử lý {len(all_tokens)} tokens từ ZipFormer...")
-    
-    for i in range(len(all_tokens)):
-        t = all_tokens[i]
-        # Nếu là ký tự đơn lẻ (ZipFormer đánh vần) thì gộp lại
-        # Ví dụ: 'm', 'ư', 'ờ', 'i' -> 'mười'
-        if len(t) == 1 and i < len(all_tokens) - 1:
-            temp_word += t
+    for k in range(len(all_tokens)):
+        tk = all_tokens[k]
+        if len(tk) == 1 and k < len(all_tokens) - 1:
+            temp_word += tk
         else:
-            final_t = temp_word + t
-            processed_tokens.append(final_t)
-            # Lấy timestamp của ký tự đầu tiên trong cụm đánh vần
-            processed_timestamps.append(all_timestamps[i - len(temp_word)])
+            processed_tokens.append(temp_word + tk)
+            processed_timestamps.append(all_timestamps[k - len(temp_word)])
             temp_word = ""
-    
-    print(f"✅ Đã dọn dẹp xong: Còn {len(processed_tokens)} từ hoàn chỉnh.")
-    # =============================================================
-    # 4. KHỚP TIMESTAMP VÀO CÂU (Hybrid Monotonic Alignment)
-    # =============================================================
-    from rapidfuzz import fuzz
-    import re
 
+    # Gióng hàng logic
+    from rapidfuzz import fuzz
     os.makedirs(output_dir, exist_ok=True)
     metadata = []
-    
-    # Biến quan trọng: Con trỏ token luôn tiến về phía trước, không bao giờ quay đầu
     last_token_idx = 0 
     
-    print(f"\n--- 🎯 BẮT ĐẦU ALIGNMENT CHI TIẾT ({len(sentences)} câu) ---")
-
+    print(f"🎯 Aligning {len(sentences)} sentences...")
     for idx, sent in enumerate(sentences):
-        # 4.1 Tiền xử lý văn bản câu: bỏ dấu câu, viết thường
-        # Mẹo: Chuyển các ký tự đặc biệt như '/' thành khoảng trắng để khớp với cách AI đọc
         clean_sent = re.sub(r'[^\w\s]', ' ', sent).lower()
         sent_words = clean_sent.split()
         if len(sent_words) < 2: continue
 
-        best_score = 0
-        best_start_ts = None
-        best_end_ts = None
-        best_current_end_idx = last_token_idx
+        best_score, best_start_ts, best_end_ts, best_end_idx = 0, 0, 0, last_token_idx
 
-        # 4.2 Tìm ứng viên Start/End (Quét trong cửa sổ 200 tokens từ vị trí cũ)
-        search_range = min(last_token_idx + 200, len(processed_tokens))
-        
-        # Thử các điểm bắt đầu khả thi (Anchor Start)
-        for i in range(last_token_idx, min(last_token_idx + 50, len(processed_tokens))):
-            # Nếu token khớp với 1 trong 2 từ đầu của câu
-            if any(word in processed_tokens[i] for word in sent_words[:2]):
-                current_start_ts = processed_timestamps[i]
-                
-                # Tìm điểm kết thúc khả thi (Anchor End)
-                # Giới hạn tìm kiếm dựa trên độ dài ước tính của câu (ít nhất 0.2s mỗi từ)
-                min_tokens_to_skip = int(len(sent_words) * 0.6)
-                for j in range(i + min_tokens_to_skip, min(i + 150, len(processed_tokens))):
-                    if any(word in processed_tokens[j] for word in sent_words[-2:]):
-                        current_end_ts = processed_timestamps[j]
-                        
-                        # 4.3 THẨM ĐỊNH TOÀN BỘ (So khớp mờ đoạn ruột)
-                        # Đây là bước "so toàn bộ" mà bạn muốn
-                        candidate_tokens = " ".join(processed_tokens[i : j+1])
-                        score = fuzz.ratio(clean_sent, candidate_text := candidate_tokens)
-                        
+        # Cửa sổ tìm kiếm
+        search_limit = min(last_token_idx + 250, len(processed_tokens))
+        for i in range(last_token_idx, min(last_token_idx + 60, len(processed_tokens))):
+            if any(w in processed_tokens[i] for w in sent_words[:2]):
+                min_skip = int(len(sent_words) * 0.55)
+                for j in range(i + min_skip, min(i + 180, len(processed_tokens))):
+                    if any(w in processed_tokens[j] for w in sent_words[-2:]):
+                        score = fuzz.ratio(clean_sent, " ".join(processed_tokens[i:j+1]))
                         if score > best_score:
-                            best_score = score
-                            best_start_ts = current_start_ts
-                            best_end_ts = current_end_ts
-                            best_current_end_idx = j
-                        
-                        if score > 95: break # Nếu đã quá chuẩn thì dừng quét
-                if best_score > 90: break
+                            best_score, best_start_ts, best_end_ts, best_end_idx = score, processed_timestamps[i], processed_timestamps[j], j
+                        if score > 94: break
+                if best_score > 85: break
 
-        # 4.4 FALLBACK (Nếu AI không khớp được anchor chuẩn)
-        if best_score < 60:
-            # Dùng mốc ngay sau câu trước
+        if best_score < 55:
+            # Fallback (Uoc tinh thoi gian dua tren do dai van ban)
             best_start_ts = processed_timestamps[last_token_idx] if last_token_idx < len(processed_timestamps) else 0
-            # Ước tính thời gian dựa trên tốc độ đọc tin tức (12 ký tự/giây)
-            best_end_ts = best_start_ts + (len(sent) / 12.0)
-            best_current_end_idx = last_token_idx + len(sent_words)
-            print(f"⚠️ Câu {idx:02d}: Không khớp tốt (Score: {best_score:.1f}), dùng ước tính.")
-        else:
-            print(f"✅ Câu {idx:02d}: Khớp chuẩn (Score: {best_score:.1f}) | {best_start_ts:.2f}s -> {best_end_ts:.2f}s")
+            best_end_ts = best_start_ts + (len(sent) / 12.5) 
+            best_end_idx = last_token_idx + len(sent_words)
 
-        # 4.5 CẬP NHẬT CHỐT CHẶN (Ngăn việc câu sau cắt trùng câu trước)
-        last_token_idx = min(best_current_end_idx + 1, len(processed_tokens) - 1)
+        last_token_idx = min(best_end_idx + 1, len(processed_tokens) - 1)
 
-        # 4.6 CẮT AUDIO (Padding thêm 0.3s đầu, 0.5s cuối cho tự nhiên)
-        start_ms = max(0, int((best_start_ts - 0.3) * 1000))
-        end_ms = int((best_end_ts + 0.5) * 1000)
-        
-        chunk_audio = audio[start_ms:end_ms]
-        if len(chunk_audio) > 500:
-            chunk_name = f"{article_id}_{idx:03d}.wav"
-            chunk_path = os.path.join(output_dir, chunk_name)
-            chunk_audio.export(chunk_path, format="wav")
-
+        # Cắt và lưu
+        ps, pe = max(0, int((best_start_ts - 0.25) * 1000)), int((best_end_ts + 0.5) * 1000)
+        chunk_seg = audio_full[ps:pe]
+        if len(chunk_seg) > 400:
+            nm = f"{article_id}_{idx:03d}.wav"
+            pth = os.path.join(output_dir, nm)
+            chunk_seg.export(pth, format="wav")
             metadata.append({
                 "id": f"{article_id}_{idx:03d}",
                 "text": sent.strip(),
-                "audio_file": chunk_path,
+                "audio_file": pth,
                 "score": round(best_score, 1),
-                "duration": round(best_end_ts - best_start_ts, 2)
+                "duration": round((pe-ps)/1000, 2)
             })
 
-    # Lưu metadata.jsonl
+    # Flush metadata & Clean Up
     with open(os.path.join(os.path.dirname(output_dir), "metadata.jsonl"), "a", encoding="utf-8") as f:
         for m in metadata:
             f.write(json.dumps(m, ensure_ascii=False) + "\n")
 
-    if os.path.exists(wav_16k): os.remove(wav_16k)
+    # Giai phong memory TRIET DE
+    del samples
+    del audio_full
+    gc.collect() 
     return metadata
