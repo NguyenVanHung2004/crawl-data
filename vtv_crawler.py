@@ -11,13 +11,51 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://vtv.vn/"
 }
+
+def safe_requests(method, url, **kwargs):
+    """
+    Hàm wrapper cho requests để tự động thử lại khi gặp lỗi Timeout hoặc Net
+    """
+    retries = 3
+    # Mặc định timeout cho cào bài báo là 60s, cho danh sách là 30s
+    if 'timeout' not in kwargs:
+        kwargs['timeout'] = 30
+        
+    for i in range(retries):
+        try:
+            if method.lower() == 'get':
+                resp = requests.get(url, **kwargs)
+            elif method.lower() == 'head':
+                resp = requests.head(url, **kwargs)
+            else:
+                resp = requests.request(method, url, **kwargs)
+                
+            # Nếu thành công (200) hoặc lỗi Client bình thường (404) thì trả về luôn
+            if resp.status_code != 429:
+                return resp
+            
+            # Nếu bị chặn (429) thì nghỉ lâu hơn
+            wait_time = (i + 1) * 5
+            print(f"⚠️ Bị chặn tạm thời (429) tại {url}. Nghỉ {wait_time}s rồi thử lại...")
+            time.sleep(wait_time)
+            
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if i < retries - 1:
+                wait_time = (i + 1) * 3
+                print(f"🕒 Timeout/Lỗi mạng tại {url}. Thử lại lần {i+2} sau {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                raise
+    return None
+
 def get_category_id(slug):
     """
     Tự động lấy ZoneId từ slug (ví dụ: 'chinh-tri')
     """
     url = f"https://vtv.vn/{slug}.htm"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=30)
+        resp = safe_requests("get", url, headers=HEADERS, timeout=30)
+        if not resp: return None
         resp.raise_for_status()
         soup = BeautifulSoup(resp.content, "html.parser")
         
@@ -43,7 +81,11 @@ def get_articles_from_timeline(category_id, start_page=1, num_pages=5):
         print(f"📡 Đang quét API: {api_url}")
         
         try:
-            resp = requests.get(api_url, headers=HEADERS, timeout=10)
+            resp = safe_requests("get", api_url, headers=HEADERS, timeout=30)
+            if not resp:
+                print(f"⚠️ Không thể tải dữ liệu từ trang {page}")
+                break
+            
             if resp.status_code != 200:
                 print(f"⚠️ Trang {page} không phản hồi (Status: {resp.status_code})")
                 break
@@ -82,7 +124,8 @@ def get_articles_from_timeline(category_id, start_page=1, num_pages=5):
     return all_articles
 def scrape_article(url, output_dir):
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=30)
+        resp = safe_requests("get", url, headers=HEADERS, timeout=60)
+        if not resp: return None
         soup = BeautifulSoup(resp.content, "html.parser")
         
         # 1. Lấy ID từ URL
@@ -144,11 +187,11 @@ def scrape_article(url, output_dir):
         print(f"🎲 Chọn giọng: {selected_voice} cho bài {article_id}")
         
         # 6.Kiểm tra link audio
-        check_resp = requests.head(audio_src, headers=HEADERS)
-        if check_resp.status_code != 200:
+        check_resp = safe_requests("head", audio_src, headers=HEADERS, timeout=15)
+        if not check_resp or check_resp.status_code != 200:
             audio_src = audio_src.replace("vtv-nu", "vtv-nam")
-            check_resp = requests.head(audio_src, headers=HEADERS)
-            if check_resp.status_code != 200:
+            check_resp = safe_requests("head", audio_src, headers=HEADERS, timeout=15)
+            if not check_resp or check_resp.status_code != 200:
                 print(f"⏩ Không có audio cho: {article_id}")
                 return None
 
@@ -160,7 +203,12 @@ def scrape_article(url, output_dir):
         meta_path = os.path.join(output_dir, f"{article_id}.json")
 
         # 9. Tải Audio và lưu Text + Metadata
-        audio_data = requests.get(audio_src, headers=HEADERS).content
+        audio_resp = safe_requests("get", audio_src, headers=HEADERS, timeout=60)
+        if not audio_resp:
+            print(f"❌ Không tải được file audio: {audio_src}")
+            return None
+        
+        audio_data = audio_resp.content
         with open(audio_path, "wb") as f:
             f.write(audio_data)
             
