@@ -13,7 +13,7 @@ VTV_CATEGORIES = [
 ]
 
 START_PAGE = 1 # Hôm nay đào từ trang 50 trở đi
-NUM_PAGES = 10  # Đào 10 trang (tầm 200 bài)
+NUM_PAGES = 5  # Đào 10 trang (tầm 200 bài)
 
 
 def main():
