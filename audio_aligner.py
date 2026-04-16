@@ -14,6 +14,14 @@ from underthesea import sent_tokenize
 # Cho phép đổi đường dẫn qua biến môi trường, mặc định là thư mục models trong dự án
 MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.getcwd(), "models"))
 
+# Tự động tìm đường dẫn ffmpeg/ffprobe cho pydub trên môi trường Cloud
+ffmpeg_find = shutil.which("ffmpeg")
+ffprobe_find = shutil.which("ffprobe")
+if ffmpeg_find:
+    AudioSegment.converter = ffmpeg_find
+if ffprobe_find:
+    AudioSegment.ffprobe = ffprobe_find
+
 def download_file(url, dest_path):
     """Hàm bổ trợ tải file có xử lý lỗi và headers."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}

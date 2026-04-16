@@ -1,8 +1,13 @@
 [phases.setup]
 nixPkgs = ["python311", "ffmpeg", "libsndfile"]
+aptPkgs = ["ffmpeg"]
 
 [phases.install]
 cmds = ["python -m pip install --upgrade pip", "pip install -r requirements.txt"]
 
+[phases.build]
+cmds = ["ffmpeg -version"]
+
 [start]
 cmd = "python main_pipeline.py"
+
