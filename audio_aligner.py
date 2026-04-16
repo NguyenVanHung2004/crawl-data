@@ -40,7 +40,7 @@ def download_model_if_needed():
         return
 
     # Link GitHub Release (Ổn định hơn HuggingFace trên Cloud)
-    model_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-2023-09-04.tar.bz2"
+    model_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-2025-04-20.tar.bz2 "
     archive_name = "model_vi.tar.bz2"
 
     print(f"📂 Checking model in: {MODEL_DIR}")
@@ -52,7 +52,7 @@ def download_model_if_needed():
             with tarfile.open(archive_name, "r:bz2") as tar:
                 tar.extractall(".")
             
-            extracted_dir = "sherpa-onnx-zipformer-vi-2023-09-04"
+            extracted_dir = "sherpa-onnx-zipformer-vi-2025-04-20"
             if os.path.exists(extracted_dir):
                 # Move files to MODEL_DIR
                 for f in os.listdir(extracted_dir):
