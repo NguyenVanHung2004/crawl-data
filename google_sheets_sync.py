@@ -98,19 +98,25 @@ def get_or_create_folder(service, folder_name, parent_id=None):
         file = service.files().create(body=file_metadata, fields='id').execute()
         return file.get('id')
 
-def upload_file_to_drive(service, file_path, folder_id):
+def upload_file_to_drive(service, file_path, folder_id, overwrite=False):
     file_name = os.path.basename(file_path)
     # Check if file exists
     query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
     
-    # Retry logic for network issues
     for attempt in range(3):
         try:
             results = service.files().list(q=query, fields="files(id, webViewLink)").execute()
             files = results.get('files', [])
             
             if files:
-                return files[0]['webViewLink']
+                file_id = files[0]['id']
+                if overwrite:
+                    # Update existing file content
+                    media = MediaFileUpload(file_path, resumable=True)
+                    service.files().update(fileId=file_id, media_body=media).execute()
+                    return files[0]['webViewLink']
+                else:
+                    return files[0]['webViewLink']
             
             file_metadata = {'name': file_name, 'parents': [folder_id]}
             media = MediaFileUpload(file_path, resumable=True)
@@ -278,6 +284,15 @@ def sync():
             ])
             synced_paths.append((meta_path, audio_path, text_path, local_dataset_path))
 
+    # --- NEW: Upload Aggregate metadata.jsonl for each category ---
+    print("📜 Syncing aggregate metadata.jsonl files...")
+    all_jsonls = glob.glob(os.path.join(DATASET_DIR, "**/metadata.jsonl"), recursive=True)
+    for jsonl_path in all_jsonls:
+        cat_name = os.path.basename(os.path.dirname(jsonl_path))
+        print(f"  📤 Updating metadata.jsonl for {cat_name}...")
+        cat_dataset_root_id = get_or_create_folder(drive_service, cat_name, dataset_root_id)
+        upload_file_to_drive(drive_service, jsonl_path, cat_dataset_root_id, overwrite=True)
+
     if rows_to_append:
         print(f"🚀 Updating Google Sheets with {len(rows_to_append)} new entries...")
         body = {'values': rows_to_append}
@@ -291,7 +306,7 @@ def sync():
             
         print("✅ Sync and Cleanup complete!")
     else:
-        print("🙌 No new articles to sync.")
+        print("🙌 No new articles to sync (but metadata.jsonl updated).")
 
 def clean_local_article(meta_path, audio_path, text_path, dataset_path):
     """Xóa các file local sau khi đã sync xong."""
