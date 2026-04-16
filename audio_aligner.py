@@ -5,6 +5,8 @@ import requests
 import numpy as np
 import sherpa_onnx
 import re
+import tarfile
+import shutil
 from pydub import AudioSegment
 from underthesea import sent_tokenize
 # --- Cấu hình ---
@@ -29,23 +31,40 @@ def download_file(url, dest_path):
         return False
 
 def download_model_if_needed():
-    """Tự động tải model ZipFormer từ HuggingFace nếu chưa có (phục vụ deploy cloud)."""
+    """Tự động tải model ZipFormer từ GitHub nếu chưa có (phục vụ deploy cloud)."""
     os.makedirs(MODEL_DIR, exist_ok=True)
     
-    base_url = "https://huggingface.co/k2-fsa/sherpa-onnx-offline-zipformer-vi-2023-09-04/resolve/main"
-    files = {
-        "tokens.txt": f"{base_url}/tokens.txt",
-        "encoder-epoch-12-avg-8.int8.onnx": f"{base_url}/encoder-epoch-12-avg-8.int8.onnx",
-        "decoder-epoch-12-avg-8.onnx": f"{base_url}/decoder-epoch-12-avg-8.onnx",
-        "joiner-epoch-12-avg-8.int8.onnx": f"{base_url}/joiner-epoch-12-avg-8.int8.onnx"
-    }
+    # Nếu đã có file encoder thì coi như đã tải xong
+    if glob.glob(os.path.join(MODEL_DIR, "encoder-*.onnx")):
+        return
+
+    # Link GitHub Release (Ổn định hơn HuggingFace trên Cloud)
+    model_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-2023-09-04.tar.bz2"
+    archive_name = "model_vi.tar.bz2"
 
     print(f"📂 Checking model in: {MODEL_DIR}")
-    for filename, url in files.items():
-        file_path = os.path.join(MODEL_DIR, filename)
-        # Kiểm tra file đã tồn tại và không bị lỗi (size > 1KB)
-        if not os.path.exists(file_path) or os.path.getsize(file_path) < 1024:
-            download_file(url, file_path)
+    print(f"📥 Downloading ASR Model from GitHub...")
+    
+    if download_file(model_url, archive_name):
+        print("📦 Extracting Zipformer ASR...")
+        try:
+            with tarfile.open(archive_name, "r:bz2") as tar:
+                tar.extractall(".")
+            
+            extracted_dir = "sherpa-onnx-zipformer-vi-2023-09-04"
+            if os.path.exists(extracted_dir):
+                # Move files to MODEL_DIR
+                for f in os.listdir(extracted_dir):
+                    src = os.path.join(extracted_dir, f)
+                    dst = os.path.join(MODEL_DIR, f)
+                    if os.path.exists(dst): os.remove(dst)
+                    shutil.move(src, dst)
+                shutil.rmtree(extracted_dir)
+            print("✅ Vietnamese Zipformer ASR Model Ready")
+        except Exception as e:
+            print(f"❌ Extraction Failed: {e}")
+        finally:
+            if os.path.exists(archive_name): os.remove(archive_name)
 
 def load_recognizer():
     # Kiểm tra và tải model nếu cần
