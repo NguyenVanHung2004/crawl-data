@@ -1,0 +1,24 @@
+# Google API Secrets (CRITICAL: Do not commit these)
+client_secrets.json
+token.json
+credentials.json
+
+# Local Dataset & Temporary Data
+data/
+raw/
+dataset/
+*.m4a
+*.wav
+*.json
+!requirements.txt
+!client_secrets.json_template
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Models (Optional: Ignore if you download them in runtime)
+# models/
