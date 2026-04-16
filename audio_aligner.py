@@ -11,6 +11,23 @@ from underthesea import sent_tokenize
 # Cho phép đổi đường dẫn qua biến môi trường, mặc định là thư mục models trong dự án
 MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(os.getcwd(), "models"))
 
+def download_file(url, dest_path):
+    """Hàm bổ trợ tải file có xử lý lỗi và headers."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    try:
+        print(f"📥 Downloading {os.path.basename(dest_path)}...")
+        resp = requests.get(url, headers=headers, stream=True, timeout=30)
+        resp.raise_for_status()
+        with open(dest_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk: f.write(chunk)
+        print(f"✅ Downloaded {os.path.basename(dest_path)}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to download {os.path.basename(dest_path)}: {e}")
+        if os.path.exists(dest_path): os.remove(dest_path)
+        return False
+
 def download_model_if_needed():
     """Tự động tải model ZipFormer từ HuggingFace nếu chưa có (phục vụ deploy cloud)."""
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -26,24 +43,21 @@ def download_model_if_needed():
     print(f"📂 Checking model in: {MODEL_DIR}")
     for filename, url in files.items():
         file_path = os.path.join(MODEL_DIR, filename)
-        if not os.path.exists(file_path):
-            print(f"📥 Downloading {filename} from HuggingFace...")
-            try:
-                resp = requests.get(url, stream=True, timeout=30)
-                resp.raise_for_status()
-                with open(file_path, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                print(f"✅ Downloaded {filename}")
-            except Exception as e:
-                print(f"❌ Error downloading {filename}: {e}")
-                if os.path.exists(file_path): os.remove(file_path)
+        # Kiểm tra file đã tồn tại và không bị lỗi (size > 1KB)
+        if not os.path.exists(file_path) or os.path.getsize(file_path) < 1024:
+            download_file(url, file_path)
 
 def load_recognizer():
     # Kiểm tra và tải model nếu cần
-    download_model_if_needed()
+    try:
+        download_model_if_needed()
+    except Exception as e:
+        print(f"⚠️ Warning during model check: {e}")
     
-    # Giữ nguyên hàm load của bạn
+    # 🕵️ Debug: In danh sách file trong model_dir
+    print(f"📦 Files in {MODEL_DIR}: {os.listdir(MODEL_DIR)}")
+    
+    # Khởi tạo recognizer
     recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
         tokens=os.path.join(MODEL_DIR, "tokens.txt"),
         encoder=os.path.join(MODEL_DIR, "encoder-epoch-12-avg-8.int8.onnx"),

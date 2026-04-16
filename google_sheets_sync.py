@@ -1,6 +1,8 @@
 import os
 import json
 import glob
+import time
+import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -100,20 +102,30 @@ def upload_file_to_drive(service, file_path, folder_id):
     file_name = os.path.basename(file_path)
     # Check if file exists
     query = f"name = '{file_name}' and '{folder_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, webViewLink)").execute()
-    files = results.get('files', [])
     
-    if files:
-        return files[0]['webViewLink']
-    
-    file_metadata = {'name': file_name, 'parents': [folder_id]}
-    media = MediaFileUpload(file_path, resumable=True)
-    file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-    
-    # Set public permission
-    service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}).execute()
-    
-    return file.get('webViewLink')
+    # Retry logic for network issues
+    for attempt in range(3):
+        try:
+            results = service.files().list(q=query, fields="files(id, webViewLink)").execute()
+            files = results.get('files', [])
+            
+            if files:
+                return files[0]['webViewLink']
+            
+            file_metadata = {'name': file_name, 'parents': [folder_id]}
+            media = MediaFileUpload(file_path, resumable=True)
+            file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+            
+            # Set public permission
+            service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}).execute()
+            
+            return file.get('webViewLink')
+        except Exception as e:
+            if attempt < 2:
+                print(f"  ⚠️ Network issue ({e}), retrying in 5s... (Attempt {attempt+1}/3)")
+                time.sleep(5)
+            else:
+                raise e
 
 # --- SHEETS HELPERS ---
 def create_spreadsheet(service, title):
