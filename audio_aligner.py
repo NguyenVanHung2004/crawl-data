@@ -40,7 +40,7 @@ def download_model_if_needed():
         return
 
     # Link GitHub Release (Ổn định hơn HuggingFace trên Cloud)
-    model_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-2025-04-20.tar.bz2 "
+    model_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-2025-04-20.tar.bz2"
     archive_name = "model_vi.tar.bz2"
 
     print(f"📂 Checking model in: {MODEL_DIR}")
@@ -75,19 +75,30 @@ def load_recognizer():
         print(f"⚠️ Warning during model check: {e}")
     
     # 🕵️ Debug: In danh sách file trong model_dir
-    print(f"📦 Files in {MODEL_DIR}: {os.listdir(MODEL_DIR)}")
+    if os.path.exists(MODEL_DIR):
+        print(f"📦 Files in {MODEL_DIR}: {os.listdir(MODEL_DIR)}")
     
-    # Khởi tạo recognizer
-    recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-        tokens=os.path.join(MODEL_DIR, "tokens.txt"),
-        encoder=os.path.join(MODEL_DIR, "encoder-epoch-12-avg-8.int8.onnx"),
-        decoder=os.path.join(MODEL_DIR, "decoder-epoch-12-avg-8.onnx"),
-        joiner=os.path.join(MODEL_DIR, "joiner-epoch-12-avg-8.int8.onnx"),
-        num_threads=4,
-        sample_rate=16000,
-        feature_dim=80,
-    )
-    return recognizer
+    # Tìm file bằng glob để đảm bảo an toàn (tên file có thể thay đổi nhẹ)
+    try:
+        tokens = os.path.join(MODEL_DIR, "tokens.txt")
+        encoder = glob.glob(os.path.join(MODEL_DIR, "encoder-*.onnx"))[0]
+        decoder = glob.glob(os.path.join(MODEL_DIR, "decoder-*.onnx"))[0]
+        joiner = glob.glob(os.path.join(MODEL_DIR, "joiner-*.onnx"))[0]
+        
+        print(f"⏳ [INIT] Đang load Vietnamese Zipformer (Sherpa-ONNX)...")
+        recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+            tokens=tokens,
+            encoder=encoder,
+            decoder=decoder,
+            joiner=joiner,
+            num_threads=4,
+            sample_rate=16000,
+            feature_dim=80,
+        )
+        return recognizer
+    except IndexError:
+        print(f"❌ Error: Could not find model files in {MODEL_DIR}. Please check the download/extraction.")
+        raise FileNotFoundError("Missing model files.")
 
 def clean_token(t):
     # ZipFormer thường có ký tự lạ hoặc khoảng trắng ở đầu token (ví dụ: ' ', '▁')
