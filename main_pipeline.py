@@ -23,6 +23,8 @@ def main():
     RAW_BASE_DIR = "data/raw"
     DATASET_BASE_DIR = "data/dataset"
     NUM_PAGES_PER_CAT = 1  
+    SYNC_INTERVAL = 5 # Sync every 5 articles
+    processed_count = 0
     
     # 1. Load Model ZipFormer
     print("1. Loading ZipFormer model...")
@@ -75,6 +77,16 @@ def main():
             print(f"Aligning {article_id}...")
             try:
                 process_and_align(audio_path, text_path, check_path, article_id, recognizer)
+                processed_count += 1
+                
+                # --- SYNC AFTER EVERY N ARTICLES ---
+                if processed_count % SYNC_INTERVAL == 0:
+                    print(f"\n📊 Auto-Syncing after {processed_count} articles...")
+                    try:
+                        sync_to_google()
+                    except Exception as e:
+                        print(f"Sync Error: {e}")
+                
             except Exception as e:
                 print(f"Alignment Error: {e}")
             finally:
@@ -85,16 +97,15 @@ def main():
         print(f"Finished Category: {slug}")
         time.sleep(5)
 
+    # Final Sync
     print("\nMISSION ACCOMPLISHED: All categories processed!")
-    
-    # 4. Sync
-    print("\nSYNCING DATA TO GOOGLE SHEETS...")
+    print("Final Sync to Google Sheets...")
     try:
         sync_to_google()
     except Exception as e:
-        print(f"Google Sync Error: {e}")
+        print(f"Final Sync Error: {e}")
     else:
-        print("Done. Sync completed.")
+        print("Done. All data synced.")
 
 if __name__ == "__main__":
     main()
