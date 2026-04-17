@@ -14,7 +14,7 @@ VTV_CATEGORIES = [
     "kinh-te", "y-te", "doi-song", "cong-nghe", "giao-duc"
 ]
 START_PAGE = 6
-NUM_PAGES = 1  
+NUM_PAGES = 10  
 RAW_BASE_DIR = "data/raw"
 DATASET_BASE_DIR = "data/dataset"
 SYNC_INTERVAL = 5 
