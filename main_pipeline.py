@@ -13,8 +13,8 @@ VTV_CATEGORIES = [
     "kinh-te", "y-te", "doi-song", "cong-nghe", "giao-duc"
 ]
 
-START_PAGE = 1 # Hôm nay đào từ trang 50 trở đi
-NUM_PAGES = 5  # Đào 10 trang (tầm 200 bài)
+START_PAGE = 6 # Hôm nay đào từ trang 6 trở đi
+NUM_PAGES = 5  # Đào 5 trang (tầm 200 bài)
 
 
 def main():
