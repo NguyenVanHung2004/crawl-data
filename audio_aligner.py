@@ -28,16 +28,16 @@ def download_file(url, dest_path):
     """Hàm bổ trợ tải file có xử lý lỗi và headers."""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        print(f"📥 Downloading {os.path.basename(dest_path)}...")
+        print(f"Downloading {os.path.basename(dest_path)}...")
         resp = requests.get(url, headers=headers, stream=True, timeout=30)
         resp.raise_for_status()
         with open(dest_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=65536): # Tăng chunk size để tải nhanh hơn
                 if chunk: f.write(chunk)
-        print(f"✅ Downloaded {os.path.basename(dest_path)}")
+        print(f"Downloaded {os.path.basename(dest_path)}")
         return True
     except Exception as e:
-        print(f"❌ Failed to download {os.path.basename(dest_path)}: {e}")
+        print(f"Failed to download {os.path.basename(dest_path)}: {e}")
         if os.path.exists(dest_path): os.remove(dest_path)
         return False
 
@@ -53,11 +53,11 @@ def download_model_if_needed():
     model_url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-vi-int8-2025-04-20.tar.bz2"
     archive_name = "model_vi_int8.tar.bz2"
 
-    print(f"📂 Model check in: {MODEL_DIR}")
-    print(f"📥 Downloading INT8 ASR Model (Cloud Optimized)...")
+    print(f"Model check in: {MODEL_DIR}")
+    print(f"Downloading INT8 ASR Model (Cloud Optimized)...")
     
     if download_file(model_url, archive_name):
-        print("📦 Extracting INT8 Zipformer...")
+        print("Extracting INT8 Zipformer...")
         try:
             with tarfile.open(archive_name, "r:bz2") as tar:
                 tar.extractall(".")
@@ -71,9 +71,9 @@ def download_model_if_needed():
                     if os.path.exists(dst): os.remove(dst)
                     shutil.move(src, dst)
                 shutil.rmtree(extracted_dir)
-            print("✅ INT8 Model Ready")
+            print("INT8 Model Ready")
         except Exception as e:
-            print(f"❌ Extraction Failed: {e}")
+            print(f"Extraction Failed: {e}")
         finally:
             if os.path.exists(archive_name): os.remove(archive_name)
 
@@ -81,7 +81,7 @@ def load_recognizer():
     try:
         download_model_if_needed()
     except Exception as e:
-        print(f"⚠️ Model check warning: {e}")
+        print(f"Model check warning: {e}")
     
     try:
         tokens = os.path.join(MODEL_DIR, "tokens.txt")
@@ -93,7 +93,7 @@ def load_recognizer():
         if not (encoder and decoder and joiner):
             raise FileNotFoundError("Missing INT8 ONNX files.")
 
-        print(f"⏳ [INIT] Loading Zipformer INT8 (Threads: 2)...")
+        print(f"Loading Zipformer INT8 (Threads: 2)...")
         recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
             tokens=tokens,
             encoder=encoder[0],
@@ -105,7 +105,7 @@ def load_recognizer():
         )
         return recognizer
     except Exception as e:
-        print(f"❌ Recognizer Load Error: {e}")
+        print(f"Recognizer Load Error: {e}")
         return None
 
 def clean_token(t):
@@ -113,7 +113,7 @@ def clean_token(t):
 
 def process_and_align(audio_path, text_path, output_dir, article_id, recognizer):
     # --- Bước 1: Decode Audio sang Waveform (Tối ưu RAM) ---
-    print(f"🔈 Processing Audio: {os.path.basename(audio_path)}")
+    print(f"Processing Audio: {os.path.basename(audio_path)}")
     
     # Thay vì dùng Pydub export rồi lại dùng wave open, ta dùng AudioSegment trực tiếp
     # sau đó gọi get_array_of_samples để tránh đọc từ disk 2 lần.
@@ -128,7 +128,7 @@ def process_and_align(audio_path, text_path, output_dir, article_id, recognizer)
     all_timestamps = []
     offset = 0
 
-    print(f"🎤 Running ASR (Zipformer INT8)...")
+    print(f"Running ASR (Zipformer INT8)...")
     for i in range(0, len(samples), chunk_size):
         chunk = samples[i : i + chunk_size]
         stream = recognizer.create_stream()
@@ -167,7 +167,7 @@ def process_and_align(audio_path, text_path, output_dir, article_id, recognizer)
     metadata = []
     last_token_idx = 0 
     
-    print(f"🎯 Aligning {len(sentences)} sentences...")
+    print(f"Aligning {len(sentences)} sentences...")
     for idx, sent in enumerate(sentences):
         clean_sent = re.sub(r'[^\w\s]', ' ', sent).lower()
         sent_words = clean_sent.split()

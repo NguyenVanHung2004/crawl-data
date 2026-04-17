@@ -2,50 +2,33 @@ import os
 import time
 import random
 import gc
+import queue
+import threading
 from vtv_crawler import get_articles_from_timeline, scrape_article, get_category_id
 from audio_aligner import load_recognizer, process_and_align
 from google_sheets_sync import sync as sync_to_google, get_remote_ids
-from pydub import AudioSegment
 
-# Danh sách tất cả các slug "sạch" bạn đã tìm thấy
+# --- CONFIG ---
 VTV_CATEGORIES = [
     "chinh-tri", "xa-hoi", "phap-luat", "the-gioi", 
     "kinh-te", "y-te", "doi-song", "cong-nghe", "giao-duc"
 ]
+START_PAGE = 1
+NUM_PAGES = 1  
+RAW_BASE_DIR = "data/raw"
+DATASET_BASE_DIR = "data/dataset"
+SYNC_INTERVAL = 5 
 
-START_PAGE = 6 # Hôm nay đào từ trang 6 trở đi
-NUM_PAGES = 5  # Đào 5 trang (tầm 200 bài)
+# Queue kết nối Crawler và Aligner
+article_queue = queue.Queue(maxsize=15) 
 
-
-def main():
-    print("--- STARTING MASTER VTV DATASET PIPELINE ---")
-    
-    RAW_BASE_DIR = "data/raw"
-    DATASET_BASE_DIR = "data/dataset"
-    NUM_PAGES_PER_CAT = 1  
-    SYNC_INTERVAL = 5 # Sync every 5 articles
-    processed_count = 0
-    
-    # 1. Load Model ZipFormer
-    print("1. Loading ZipFormer model...")
-    recognizer = load_recognizer()
-    if not recognizer: return
-
-    # 1.5. Check existing IDs
-    print("Checking already crawled IDs from Google Sheets...")
-    blacklisted_ids = get_remote_ids()
-    print(f"Done. Found {len(blacklisted_ids)} IDs on Google. These will be skipped.")
-
-    # 2. Category Loop
+def crawler_worker(blacklisted_ids):
+    """Luồng chuyên đi cào bài và tải audio (Producer)"""
+    print("[CRAWLER] Bắt đầu quét dữ liệu...")
     for slug in VTV_CATEGORIES:
-        print(f"\n" + "="*50)
-        print(f"PROCESSING CATEGORY: {slug.upper()}")
-        print("="*50)
-        
+        print(f"\n[CRAWLER] PROCESSING CATEGORY: {slug.upper()}")
         cat_id = get_category_id(slug)
-        if not cat_id:
-            print(f"Skip {slug}: Could not find ZoneId")
-            continue
+        if not cat_id: continue
             
         cat_raw_dir = os.path.join(RAW_BASE_DIR, slug)
         cat_dataset_dir = os.path.join(DATASET_BASE_DIR, slug)
@@ -53,59 +36,97 @@ def main():
         os.makedirs(cat_dataset_dir, exist_ok=True)
 
         articles = get_articles_from_timeline(cat_id, start_page=START_PAGE, num_pages=NUM_PAGES)
-        print(f"Found {len(articles)} potential articles in {slug}")
-
-        # 3. Article Loop
+        
         for item in articles:
             article_id = item['id']
             url = item['url']
             
             check_path = os.path.join(cat_dataset_dir, f"{article_id}_audio")
             if os.path.exists(check_path) or article_id in blacklisted_ids:
-                print(f"Article {article_id} already exists (Local or Google). Skipping...")
                 continue
 
-            # A. Scrape
+            # Tải bài báo và m4a luôn trong luồng này
             scrape_result = scrape_article(url, cat_raw_dir)
-            if not scrape_result: continue
+            if scrape_result:
+                # Đẩy data vào hàng đợi để luồng AI xử lý
+                article_queue.put({
+                    "data": scrape_result,
+                    "dataset_dir": cat_dataset_dir,
+                    "check_path": check_path
+                })
             
-            # B. Get Paths
-            audio_path = scrape_result["audio"]
-            text_path = scrape_result["text"]
+            # GIẢM SLEEP XUỐNG 0.5s để tăng tốc cào bài
+            time.sleep(random.uniform(0.3, 0.7))
+
+    # Gửi tín hiệu kết thúc cho Consumer
+    article_queue.put(None)
+    print("[CRAWLER] Hoàn thành việc quét toàn bộ chuyên mục.")
+
+def aligner_worker(recognizer):
+    """Luồng chuyên chạy AI và Sync Google (Consumer)"""
+    print("[ALIGNER] Sẵn sàng xử lý AI...")
+    processed_count = 0
+    
+    while True:
+        task = article_queue.get()
+        if task is None: # Tín hiệu kết thúc
+            break
             
-            # C. Alignment
-            print(f"Aligning {article_id}...")
-            try:
-                process_and_align(audio_path, text_path, check_path, article_id, recognizer)
-                processed_count += 1
-                
-                # --- SYNC AFTER EVERY N ARTICLES ---
-                if processed_count % SYNC_INTERVAL == 0:
-                    print(f"\n📊 Auto-Syncing after {processed_count} articles...")
-                    try:
-                        sync_to_google()
-                    except Exception as e:
-                        print(f"Sync Error: {e}")
-                
-            except Exception as e:
-                print(f"Alignment Error: {e}")
-            finally:
-                gc.collect()
+        article_id = task["data"]["id"]
+        audio_path = task["data"]["audio"]
+        text_path = task["data"]["text"]
+        check_path = task["check_path"]
 
-            time.sleep(random.uniform(1.0, 2.5))
+        print(f"[ALIGNER] Đang chạy AI cho bài: {article_id}")
+        try:
+            # Chạy ZipFormer & Alignment
+            process_and_align(audio_path, text_path, check_path, article_id, recognizer)
+            processed_count += 1
+            
+            # Sync định kỳ mỗi 5 bài
+            if processed_count % SYNC_INTERVAL == 0:
+                print(f"[SYNC] Tu dong dong bo {processed_count} bai len Google Sheets...")
+                try:
+                    sync_to_google()
+                except Exception as e:
+                    print(f"Sync Error: {e}")
+        except Exception as e:
+            print(f"❌ Lỗi xử lý bài {article_id}: {e}")
+        finally:
+            gc.collect()
+            article_queue.task_done()
 
-        print(f"Finished Category: {slug}")
-        time.sleep(5)
-
-    # Final Sync
-    print("\nMISSION ACCOMPLISHED: All categories processed!")
-    print("Final Sync to Google Sheets...")
+    # Đồng bộ lần cuối khi kết thúc
+    print("\n[SYNC] Đang đồng bộ lần cuối cùng...")
     try:
         sync_to_google()
     except Exception as e:
         print(f"Final Sync Error: {e}")
-    else:
-        print("Done. All data synced.")
+    print("[ALIGNER] Hoàn thành mọi nhiệm vụ.")
+
+def main():
+    print("--- STARTING MULTI-THREADED VTV PIPELINE (SUPER FAST MODE) ---")
+    
+    # 1. Load Model (Load 1 lần duy nhất ở main thread)
+    recognizer = load_recognizer()
+    if not recognizer: return
+
+    # 2. Lấy danh sách ID đã có để tránh trùng
+    blacklisted_ids = get_remote_ids()
+    print(f"Bỏ qua {len(blacklisted_ids)} bài báo đã có trên Google Sheets.")
+
+    # 3. Khởi chạy 2 luồng song song
+    t1 = threading.Thread(target=crawler_worker, args=(blacklisted_ids,), name="CrawlerThread")
+    t2 = threading.Thread(target=aligner_worker, args=(recognizer,), name="AlignerThread")
+
+    t1.start()
+    t2.start()
+
+    # Đợi cả 2 luồng hoàn thành
+    t1.join()
+    t2.join()
+
+    print("\n[FINISH] Toàn bộ quy trình đã hoàn tất.")
 
 if __name__ == "__main__":
     main()

@@ -6,18 +6,35 @@ import re
 import datetime     
 import random
 import time
+import json
+from mutagen.mp4 import MP4
+from mutagen.mp3 import MP3
+
 # Header để giả lập trình duyệt
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://vtv.vn/"
 }
 
+def get_audio_duration(file_path):
+    """Lấy độ dài file audio (giây) dùng mutagen"""
+    try:
+        if file_path.endswith('.m4a'):
+            audio = MP4(file_path)
+        elif file_path.endswith('.mp3'):
+            audio = MP3(file_path)
+        else:
+            return 0
+        return audio.info.length
+    except Exception as e:
+        print(f"⚠️ Không thể lấy độ dài audio {file_path}: {e}")
+        return 0
+
 def safe_requests(method, url, **kwargs):
     """
     Hàm wrapper cho requests để tự động thử lại khi gặp lỗi Timeout hoặc Net
     """
     retries = 3
-    # Mặc định timeout cho cào bài báo là 60s, cho danh sách là 30s
     if 'timeout' not in kwargs:
         kwargs['timeout'] = 30
         
@@ -30,28 +47,23 @@ def safe_requests(method, url, **kwargs):
             else:
                 resp = requests.request(method, url, **kwargs)
                 
-            # Nếu thành công (200) hoặc lỗi Client bình thường (404) thì trả về luôn
             if resp.status_code != 429:
                 return resp
             
-            # Nếu bị chặn (429) thì nghỉ lâu hơn
             wait_time = (i + 1) * 5
-            print(f"⚠️ Bị chặn tạm thời (429) tại {url}. Nghỉ {wait_time}s rồi thử lại...")
+            print(f"Blocked (429) at {url}. Wait {wait_time}s...")
             time.sleep(wait_time)
             
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             if i < retries - 1:
                 wait_time = (i + 1) * 3
-                print(f"🕒 Timeout/Lỗi mạng tại {url}. Thử lại lần {i+2} sau {wait_time}s...")
+                print(f"Timeout/Error at {url}. Retry {i+2} after {wait_time}s...")
                 time.sleep(wait_time)
             else:
                 raise
     return None
 
 def get_category_id(slug):
-    """
-    Tự động lấy ZoneId từ slug (ví dụ: 'chinh-tri')
-    """
     url = f"https://vtv.vn/{slug}.htm"
     try:
         resp = safe_requests("get", url, headers=HEADERS, timeout=30)
@@ -59,7 +71,6 @@ def get_category_id(slug):
         resp.raise_for_status()
         soup = BeautifulSoup(resp.content, "html.parser")
         
-        # Nhắm thẳng vào thẻ input hidden bạn vừa tìm thấy
         zone_input = soup.find("input", {"id": "hdZoneId"})
         if zone_input and zone_input.get("value"):
             return zone_input.get("value")
@@ -68,17 +79,13 @@ def get_category_id(slug):
     except Exception as e:
         print(f"❌ Lỗi khi lấy ID chuyên mục {slug}: {e}")
         return None
+
 def get_articles_from_timeline(category_id, start_page=1, num_pages=5):
-    """
-    Sử dụng endpoint timelinelist để lấy danh sách bài viết
-    """
     all_articles = []
     
     for page in range(start_page, start_page + num_pages):
-        # Link chuẩn bạn vừa tìm thấy
         api_url = f"https://vtv.vn/timelinelist/{category_id}/{page}.htm"
-        
-        print(f"📡 Đang quét API: {api_url}")
+        print(f"Scanning articles {api_url}")
         
         try:
             resp = safe_requests("get", api_url, headers=HEADERS, timeout=30)
@@ -91,8 +98,6 @@ def get_articles_from_timeline(category_id, start_page=1, num_pages=5):
                 break
                 
             soup = BeautifulSoup(resp.content, "html.parser")
-            
-            # Tìm tất cả các thẻ article có class box-category-item
             items = soup.find_all("article", class_="box-category-item")
             
             if not items:
@@ -104,7 +109,7 @@ def get_articles_from_timeline(category_id, start_page=1, num_pages=5):
                 if not a_tag: continue
                 
                 href = a_tag.get('href')
-                article_id = item.get('data-id') # Lấy ID trực tiếp từ thuộc tính data-id
+                article_id = item.get('data-id') 
                 
                 if href:
                     full_url = "https://vtv.vn" + href if not href.startswith("http") else href
@@ -114,115 +119,94 @@ def get_articles_from_timeline(category_id, start_page=1, num_pages=5):
                             "id": article_id
                         })
             
-            print(f"✅ Trang {page}: Lấy được {len(items)} bài.")
-            time.sleep(1) # Nghỉ 1s để MediaCDN không chặn
+            print(f"Page {page}: Got {len(items)} articles.")
+            time.sleep(0.5) 
             
         except Exception as e:
             print(f"❌ Lỗi tại trang {page}: {e}")
             break
             
     return all_articles
+
 def scrape_article(url, output_dir):
     try:
         resp = safe_requests("get", url, headers=HEADERS, timeout=60)
         if not resp: return None
         soup = BeautifulSoup(resp.content, "html.parser")
         
-        # 1. Lấy ID từ URL
         match_id = re.search(r'(\d+)\.htm$', url)
         if not match_id: return None
         article_id = match_id.group(1)
         
-        # 2. Lấy Ngày tháng để dựng link TTS
         publish_date = soup.find("meta", property="article:published_time")
         if publish_date:
             date_str = publish_date['content'][:10].replace("-", "/") 
         else:
             date_str = datetime.datetime.now().strftime("%Y/%m/%d")
 
-        # 2. Lấy Tiêu đề bài báo
         title_tag = soup.find("h1", class_="title-detail") or soup.find("meta", property="og:title")
-        title = ""
-        if title_tag:
-            title = title_tag.get_text(strip=True) if title_tag.name == "h1" else title_tag.get("content", "")
+        title = title_tag.get_text(strip=True) if title_tag and title_tag.name == "h1" else (title_tag.get("content", "") if title_tag else "")
 
-        # 3. Nhắm thẳng vào "tọa độ" bạn vừa gửi
-        # Thử selector itemprop trước vì nó là chuẩn SEO, rất ít khi đổi
         content_div = soup.find("div", {"itemprop": "articleBody"}) or \
                       soup.select_one(".detail-content") or \
                       soup.select_one(".noidung")
 
         if not content_div:
-            print(f"⏩ Không tìm thấy articleBody cho: {article_id}")
             return None
 
-        # 3. DỌN DẸP RÁC (Quan trọng để Dataset sạch)
-        # Loại bỏ script, quảng cáo và chú thích ảnh (Caption thường không có trong file Audio đọc)
         for junk in content_div.select("script, style, .PhotoCMS_Caption, .link-lien-quan, div[id^='zone-']"):
             junk.decompose()
 
-        # 4. Lấy các đoạn văn bản chính
-        # Chỉ lấy text trong thẻ <p>, loại bỏ khoảng trắng thừa
         paragraphs = []
         for p in content_div.find_all("p"):
             txt = p.get_text(strip=True)
-            if txt and len(txt) > 20: # Lọc bỏ các đoạn quá ngắn hoặc icon rác
+            if txt and len(txt) > 20: 
                 paragraphs.append(txt)
         
         standard_text = " ".join(paragraphs)
 
         if not standard_text:
-            print(f"⏩ Văn bản sau khi lọc bị rỗng: {article_id}")
             return None
 
-        VOICE_TAGS = [
-            "vtv-nu-",      # Nữ miền Bắc (Mặc định)
-            "vtv-nam-",     # Nam miền Bắc
-            "vtv-nam-1-",   # Nam miền Nam
-            "vtv-nu-1-"     # Nữ miền Nam
-        ]
+        VOICE_TAGS = ["vtv-nu-", "vtv-nam-", "vtv-nam-1-", "vtv-nu-1-"]
         selected_voice = random.choice(VOICE_TAGS)
-        # 5. Xử lý Audio (Dựng link theo quy luật bạn tìm thấy)
         audio_src = f"https://tts.mediacdn.vn/{date_str}/{selected_voice}{article_id}.m4a"
-        print(f"🎲 Chọn giọng: {selected_voice} cho bài {article_id}")
         
-        # 6.Kiểm tra link audio
         check_resp = safe_requests("head", audio_src, headers=HEADERS, timeout=15)
         if not check_resp or check_resp.status_code != 200:
             audio_src = audio_src.replace("vtv-nu", "vtv-nam")
             check_resp = safe_requests("head", audio_src, headers=HEADERS, timeout=15)
             if not check_resp or check_resp.status_code != 200:
-                print(f"⏩ Không có audio cho: {article_id}")
                 return None
 
-        # 8. Thiết lập đường dẫn lưu file
         os.makedirs(output_dir, exist_ok=True)
-        ext = "m4a" # Theo link bạn cung cấp
-        audio_path = os.path.join(output_dir, f"{article_id}.{ext}")
+        audio_path = os.path.join(output_dir, f"{article_id}.m4a")
         text_path = os.path.join(output_dir, f"{article_id}.txt")
         meta_path = os.path.join(output_dir, f"{article_id}.json")
 
-        # 9. Tải Audio và lưu Text + Metadata
         audio_resp = safe_requests("get", audio_src, headers=HEADERS, timeout=60)
         if not audio_resp:
-            print(f"❌ Không tải được file audio: {audio_src}")
             return None
         
-        audio_data = audio_resp.content
         with open(audio_path, "wb") as f:
-            f.write(audio_data)
+            f.write(audio_resp.content)
             
+        # KIỂM TRA ĐỘ DÀI: CHỈ LẤY TRÊN 5 PHÚT (300 GIÂY)
+        duration = get_audio_duration(audio_path)
+        if duration < 300:
+            print(f"Skip {article_id}: Audio too short ({duration:.1f}s < 300s)")
+            if os.path.exists(audio_path): os.remove(audio_path)
+            return None
+        else:
+            print(f"🎵 Nhận bài {article_id}: Độ dài {duration/60:.1f} phút")
+
         with open(text_path, "w", encoding="utf-8") as f:
             f.write(standard_text)
 
-        import json
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump({
-                "id": article_id,
-                "title": title,
-                "url": url,
-                "voice": selected_voice,
-                "date": date_str
+                "id": article_id, "title": title, "url": url,
+                "voice": selected_voice, "date": date_str, "duration": duration
             }, f, ensure_ascii=False, indent=4)
             
         print(f"✅ Đã tải: {article_id} | Tiêu đề: {title[:30]}...")
