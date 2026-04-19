@@ -13,8 +13,8 @@ VTV_CATEGORIES = [
     "chinh-tri", "xa-hoi", "phap-luat", "the-gioi", 
     "kinh-te", "y-te", "doi-song", "cong-nghe", "giao-duc"
 ]
-START_PAGE = 7
-NUM_PAGES = 15  
+START_PAGE = 22
+NUM_PAGES = 8
 RAW_BASE_DIR = "data/raw"
 DATASET_BASE_DIR = "data/dataset"
 SYNC_INTERVAL = 5 
