@@ -255,10 +255,35 @@ def sync():
             dataset_folder_link = folder_meta.get('webViewLink')
             
             # Upload all files in dataset folder
+            chunk_drive_links = {}
             for f in os.listdir(local_dataset_path):
                 f_path = os.path.join(local_dataset_path, f)
                 if os.path.isfile(f_path):
-                    upload_file_to_drive(drive_service, f_path, article_dataset_folder_id)
+                    link = upload_file_to_drive(drive_service, f_path, article_dataset_folder_id)
+                    if link:
+                        chunk_drive_links[f] = link
+
+            # Update jsonl file with individual chunk drive URLs
+            jsonl_path = os.path.join(DATASET_DIR, category_name, "metadata.jsonl")
+            if os.path.exists(jsonl_path) and chunk_drive_links:
+                try:
+                    updated_lines = []
+                    with open(jsonl_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            try:
+                                item = json.loads(line)
+                                audio_file_name = os.path.basename(item.get("audio_file", ""))
+                                if audio_file_name in chunk_drive_links:
+                                    item["chunk_drive_url"] = chunk_drive_links[audio_file_name]
+                                updated_lines.append(json.dumps(item, ensure_ascii=False))
+                            except:
+                                updated_lines.append(line.strip())
+                    
+                    with open(jsonl_path, 'w', encoding='utf-8') as f:
+                        for line in updated_lines:
+                            f.write(line + "\n")
+                except Exception as e:
+                    print(f"  ⚠️ Error updating metadata.jsonl with chunk links: {e}")
 
         duration = get_audio_duration(audio_path) if os.path.exists(audio_path) else 0
         word_count = 0
